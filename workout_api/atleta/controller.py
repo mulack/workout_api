@@ -1,7 +1,8 @@
 from datetime import datetime
 from uuid import uuid4
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status, Query
 from pydantic import UUID4
+from sqlalchemy.exc import IntegrityError
 
 from workout_api.atleta.schemas import AtletaIn, AtletaOut, AtletaUpdate
 from workout_api.atleta.models import AtletaModel
@@ -10,6 +11,9 @@ from workout_api.centro_treinamento.models import CentroTreinamentoModel
 
 from workout_api.contrib.dependencies import DatabaseDependency
 from sqlalchemy.future import select
+from fastapi_pagination import add_pagination, paginate
+from fastapi_pagination.bases import AbstractPage
+from fastapi_pagination.default import Page
 
 router = APIRouter()
 
@@ -54,6 +58,11 @@ async def post(
         
         db_session.add(atleta_model)
         await db_session.commit()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            detail=f'Já existe um atleta cadastrado com o cpf: {atleta_in.cpf}'
+        )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
@@ -67,12 +76,25 @@ async def post(
     '/', 
     summary='Consultar todos os Atletas',
     status_code=status.HTTP_200_OK,
-    response_model=list[AtletaOut],
+    response_model=Page[AtletaOut],
 )
-async def query(db_session: DatabaseDependency) -> list[AtletaOut]:
-    atletas: list[AtletaOut] = (await db_session.execute(select(AtletaModel))).scalars().all()
+async def query(
+    db_session: DatabaseDependency, 
+    nome: str = Query(None), 
+    cpf: str = Query(None), 
+    limit: int = Query(10, ge=1, le=100), 
+    offset: int = Query(0, ge=0)
+) -> AbstractPage[AtletaOut]:
+    query = select(AtletaModel)
     
-    return [AtletaOut.model_validate(atleta) for atleta in atletas]
+    if nome:
+        query = query.filter(AtletaModel.nome.ilike(f"%{nome}%"))
+    
+    if cpf:
+        query = query.filter(AtletaModel.cpf == cpf)
+    
+    atletas = (await db_session.execute(query)).scalars().all()
+    return paginate(atletas)
 
 
 @router.get(
@@ -140,3 +162,5 @@ async def delete(id: UUID4, db_session: DatabaseDependency) -> None:
     
     await db_session.delete(atleta)
     await db_session.commit()
+
+add_pagination(router)
